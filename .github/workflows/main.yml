@@ -66,8 +66,8 @@ jobs:
                   applicationId "ro.profitride"
                   minSdk 24
                   targetSdk 34
-                  versionCode 23
-                  versionName "4.0"
+                  versionCode 24
+                  versionName "4.1"
               }
               buildTypes { release { minifyEnabled false } }
               compileOptions {
@@ -504,7 +504,6 @@ jobs:
           }
           ''')
 
-          # CALC NOU - RON/km se calculează pe TARIF BRUT (nu net)
           w('app/src/main/java/ro/profitride/Calc.kt', '''
           package ro.profitride
           import android.content.Context
@@ -537,26 +536,28 @@ jobs:
                   val commission = p.getFloat("commission", 20f)
                   val extraPerKm = p.getFloat("extraCost", 0.5f)
                   val minPerKm = p.getFloat("minPerKm", 2.5f)
-
+                  val minPerHour = p.getFloat("minPerHour", 45f)
+                  
                   val totalKm = o.pickupKm + o.tripKm
                   val totalMin = o.pickupMinutes + o.tripMinutes
-
-                  // RON/km = TARIF BRUT / TOTAL KM (decizia de acceptare se bazează pe asta)
+                  
+                  // Calcul corect RON/km pe tarif brut
                   val grossPerKm = if (totalKm > 0f) o.priceRon / totalKm else 0f
-
-                  // Costuri detaliate
+                  
                   val commissionCut = o.priceRon * commission / 100f
                   val fuelCost = totalKm / 100f * consumption * fuelPrice
                   val extraCost = totalKm * extraPerKm
                   val totalExpenses = commissionCut + fuelCost + extraCost
                   val netProfit = o.priceRon - totalExpenses
-
+                  
+                  val perHour = if (totalMin > 0) netProfit / (totalMin / 60f) else 0f
+                  
                   val (label, color) = when {
-                      grossPerKm >= minPerKm * 1.2f -> "PROFITABIL" to GREEN
-                      grossPerKm >= minPerKm -> "MEDIU" to YELLOW
+                      perHour >= minPerHour * 1.2f && grossPerKm >= minPerKm -> "PROFITABIL" to GREEN
+                      perHour >= minPerHour && grossPerKm >= minPerKm * 0.8f -> "MEDIU" to YELLOW
                       else -> "NEPROFITABIL" to RED
                   }
-
+                  
                   val text = """
                       [%s]
                       ---------------------
@@ -567,10 +568,10 @@ jobs:
                       Chelt: %.2f RON
                       Rămâne: %.2f RON
                   """.trimIndent().format(label, grossPerKm, totalKm, totalMin, o.priceRon, totalExpenses, netProfit)
-
+                  
                   val speech = when (label) {
-                      "PROFITABIL" -> "Profitabil. ${grossPerKm.toInt()} lei pe kilometru."
-                      "MEDIU" -> "Mediu. ${grossPerKm.toInt()} lei pe kilometru."
+                      "PROFITABIL" -> "Profitabil. ${grossPerKm.toInt()} lei pe km, ${perHour.toInt()} lei pe ora."
+                      "MEDIU" -> "Mediu. ${perHour.toInt()} lei pe ora."
                       else -> "Neprofitabil."
                   }
                   return Result(text, color, label, grossPerKm, netProfit, totalExpenses, commissionCut, fuelCost, extraCost, totalKm, totalMin, o.priceRon, speech)
@@ -578,7 +579,6 @@ jobs:
           }
           ''')
 
-          # GAUGE VIEW - Ceas/manometru custom
           w('app/src/main/java/ro/profitride/GaugeView.kt', '''
           package ro.profitride
 
@@ -720,13 +720,13 @@ jobs:
                   }
                   val workRequest = PeriodicWorkRequestBuilder<ExpiryWorker>(1, TimeUnit.DAYS).build()
                   WorkManager.getInstance(this).enqueueUniquePeriodicWork("ExpiryCheck", ExistingPeriodicWorkPolicy.KEEP, workRequest)
-
+                  
                   etPickup = findViewById(R.id.etPickup)
                   etTrip = findViewById(R.id.etTrip)
                   etPrice = findViewById(R.id.etPrice)
                   tvStatus = findViewById(R.id.tvStatus)
                   tvResult = findViewById(R.id.tvResult)
-
+                  
                   etPickup.addTextChangedListener(watcher)
                   etTrip.addTextChangedListener(watcher)
                   etPrice.addTextChangedListener(watcher)
@@ -907,7 +907,8 @@ jobs:
                       .setSmallIcon(android.R.drawable.ic_dialog_alert)
                       .setContentTitle("Atenție! $label expiră curând!")
                       .setContentText("Mai ai $days zile până la expirarea: $label.")
-                      .setPriority(Compat.PRIORITY_HIGH).setAutoCancel(true).build()
+                      .setPriority(NotificationCompat.PRIORITY_HIGH) // <-- FIX AICI
+                      .setAutoCancel(true).build()
                   nm.notify(label.hashCode(), n)
               }
           }
@@ -1046,7 +1047,6 @@ jobs:
           }
           ''')
 
-          # OFFER READER - Logica anti-salvare-falsa + overlay cu 2 gauge-uri
           w('app/src/main/java/ro/profitride/OfferReader.kt', r'''
           package ro.profitride
 
@@ -1098,7 +1098,6 @@ jobs:
               private var lastParseAt = 0L
               private var lastKey = ""
 
-              // STATE MACHINE pentru salvare corecta
               private var pendingOffer: OfferParser.Offer? = null
               private var pendingResult: Calc.Result? = null
               private var offerSeenAt = 0L
@@ -1138,7 +1137,6 @@ jobs:
 
                   val hasAccept = raw.contains("accept")
 
-                  // OFERTA NOUA - detectam dupa key
                   if (hasAccept) {
                       val offer = OfferParser.parse(raw, avgSpeed())
                       if (offer != null) {
@@ -1157,13 +1155,11 @@ jobs:
                           }
                       }
                   } else {
-                      // Nu mai e "Accept" - inseamna ca oferta a fost dismiss-uita
                       if (pendingOffer != null && !offerDismissed) {
                           offerDismissed = true
                       }
                   }
 
-                  // FINISHED - salvam DOAR daca: am vazut Accept, a disparut, si au trecut minim 30 sec
                   val finished = raw.contains("finalizează") || raw.contains("finalizeaza") ||
                                  raw.contains("încheie") || raw.contains("incheie") ||
                                  raw.contains("ați ajuns") || raw.contains("ati ajuns") ||
@@ -1172,13 +1168,11 @@ jobs:
                   if (finished && pendingOffer != null && offerDismissed && !offerSaved) {
                       val elapsed = System.currentTimeMillis() - offerSeenAt
                       if (elapsed < 30_000) {
-                          // prea devreme, ignoram (probabil fals pozitiv)
                           return
                       }
                       val o = pendingOffer!!
                       val r = pendingResult!!
                       try {
-                          // Deduplicare - verificam ultima linie din CSV
                           var skip = false
                           try {
                               val lines = openFileInput("offers.csv").bufferedReader().use { it.readLines() }
@@ -1231,7 +1225,6 @@ jobs:
                   else @Suppress("DEPRECATION") v.vibrate(ms)
               }
 
-              // ============== OVERLAY NOU CU 2 GAUGE-URI ==============
               private fun showOverlay(r: Calc.Result) {
                   removeOverlay()
                   val density = resources.displayMetrics.density
@@ -1248,7 +1241,6 @@ jobs:
                       elevation = 25f
                   }
 
-                  // Header: PROFITABIL / MEDIU / NEPROFITABIL
                   val header = TextView(this).apply {
                       text = r.label
                       setTextColor(r.color)
@@ -1259,7 +1251,6 @@ jobs:
                   }
                   container.addView(header)
 
-                  // Rândul cu 2 gauge-uri
                   val row = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER
@@ -1269,7 +1260,7 @@ jobs:
                   val margin = (6*density).toInt()
 
                   val gauge1 = GaugeView(this).apply {
-                      percent = (r.grossPerKm / 5f).coerceIn(0f, 1f)  // scara 0-5 RON/km
+                      percent = (r.grossPerKm / 5f).coerceIn(0f, 1f)
                       arcColor = r.color
                       valueText = "%.2f".format(r.grossPerKm)
                       labelText = "RON/km"
@@ -1277,7 +1268,6 @@ jobs:
                   }
 
                   val gauge2 = GaugeView(this).apply {
-                      // Procentul de profit din tarif brut
                       val ratio = if (r.priceRon > 0f) r.netProfit / r.priceRon else 0f
                       percent = ratio.coerceIn(0f, 1f)
                       arcColor = r.color
@@ -1291,7 +1281,6 @@ jobs:
                   row.addView(gauge2)
                   container.addView(row)
 
-                  // Footer: km + timp
                   val footer = TextView(this).apply {
                       text = "%.1f km · %d min · %.2f RON".format(r.totalKm, r.totalMin, r.priceRon)
                       setTextColor(Color.parseColor("#CCCCCC"))
@@ -1301,7 +1290,6 @@ jobs:
                   }
                   container.addView(footer)
 
-                  // Buton X
                   val closeBtn = TextView(this).apply {
                       text = "✕"
                       setTextColor(Color.WHITE)
@@ -1350,7 +1338,6 @@ jobs:
                   overlay = null
               }
 
-              // ============== BARA LATERALA ==============
               private fun showSideBar() {
                   if (sideBarView != null) return
                   val density = resources.displayMetrics.density
