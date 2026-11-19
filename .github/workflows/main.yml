@@ -33,20 +33,22 @@ jobs:
       - name: Setup signing keystore (persistent)
         run: |
           if [ ! -f app/keystore.b64 ]; then
-            echo "🔐 Primul build - se generează keystore-ul persistent..."
+            echo "🔐 Primul build - generare keystore persistent..."
             mkdir -p app
             keytool -genkeypair -v -keystore app/release.jks -keyalg RSA -keysize 2048 -validity 10000 \
               -alias profitride -storepass profitride123 -keypass profitride123 \
               -dname "CN=ProfitRide, OU=Dev, O=ProfitRide, L=Bucuresti, S=Bucuresti, C=RO"
             base64 -w0 app/release.jks > app/keystore.b64
+            rm app/release.jks
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add app/keystore.b64
             git commit -m "Auto: keystore persistent pentru update-uri"
             git push
+            base64 -d app/keystore.b64 > app/release.jks
             echo "✅ Keystore generat și salvat în repo"
           else
-            echo "🔐 Keystore existent găsit - se decodează..."
+            echo "🔐 Keystore existent - decodez..."
             base64 -d app/keystore.b64 > app/release.jks
             echo "✅ Keystore încărcat"
           fi
@@ -81,7 +83,6 @@ jobs:
           }
           ''')
 
-          # app/build.gradle CU SEMNARE PERSISTENTĂ
           w('app/build.gradle', '''
           plugins {
               id 'com.android.application'
@@ -94,8 +95,8 @@ jobs:
                   applicationId "ro.profitride"
                   minSdk 24
                   targetSdk 34
-                  versionCode 25
-                  versionName "4.2"
+                  versionCode 26
+                  versionName "4.3"
               }
               signingConfigs {
                   release {
@@ -118,9 +119,7 @@ jobs:
                   sourceCompatibility JavaVersion.VERSION_17
                   targetCompatibility JavaVersion.VERSION_17
               }
-              kotlinOptions {
-                  jvmTarget = '17'
-              }
+              kotlinOptions { jvmTarget = '17' }
           }
           dependencies {
               implementation 'androidx.appcompat:appcompat:1.6.1'
@@ -161,27 +160,26 @@ jobs:
           </manifest>
           ''')
 
+          # ICON NOU: PR rosu pe fundal negru
           w('app/src/main/res/drawable/ic_car.xml', '''
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
               android:width="108dp" android:height="108dp"
               android:viewportWidth="108" android:viewportHeight="108">
-              <path android:fillColor="#00000000" android:strokeColor="#1976D2" android:strokeWidth="4"
-                  android:pathData="M16,4 Q4,4 4,16 L4,92 Q4,104 16,104 L92,104 Q104,104 104,92 L104,16 Q104,4 92,4 Z"/>
-              <path android:fillColor="#E3F2FD" android:pathData="M18,6 Q6,6 6,18 L6,90 Q6,102 18,102 L90,102 Q102,102 102,90 L102,18 Q102,6 90,6 Z"/>
-              <path android:fillColor="#33000000" android:pathData="M20,82 a34,6 0 1,0 68,0 a34,6 0 1,0 -68,0"/>
-              <path android:fillColor="#D32F2F" android:pathData="M20,65 h68 v10 a5,5 0 0,1 -5,5 h-58 a5,5 0 0,1 -5,-5 z"/>
-              <path android:fillColor="#B71C1C" android:pathData="M30,45 h48 l12,20 h-72 z"/>
-              <path android:fillColor="#1E1E1E" android:pathData="M35,48 h16 v12 h-22 z"/>
-              <path android:fillColor="#1E1E1E" android:pathData="M56,48 h14 l7,12 h-21 z"/>
-              <path android:fillColor="#55FFFFFF" android:pathData="M36,49 h14 v3 h-20 z"/>
-              <path android:fillColor="#111111" android:pathData="M35,80 m-10,0 a10,10 0 1,1 20,0 a10,10 0 1,1 -20,0"/>
-              <path android:fillColor="#9E9E9E" android:pathData="M35,80 m-4,0 a4,4 0 1,1 8,0 a4,4 0 1,1 -8,0"/>
-              <path android:fillColor="#111111" android:pathData="M73,80 m-10,0 a10,10 0 1,1 20,0 a10,10 0 1,1 -20,0"/>
-              <path android:fillColor="#9E9E9E" android:pathData="M73,80 m-4,0 a4,4 0 1,1 8,0 a4,4 0 1,1 -8,0"/>
-              <path android:strokeColor="#003300" android:strokeWidth="6" android:strokeLineCap="round"
-                  android:pathData="M56,54 v14 M50,57 h8 a2,2 0 0,1 0,4 h-4 a2,2 0 0,0 0,4 h8"/>
-              <path android:strokeColor="#00E676" android:strokeWidth="4" android:strokeLineCap="round"
-                  android:pathData="M54,52 v14 M48,55 h8 a2,2 0 0,1 0,4 h-4 a2,2 0 0,0 0,4 h8"/>
+              <path android:fillColor="#000000" android:pathData="M0,0h108v108h-108z"/>
+              <path
+                  android:strokeColor="#FF1744"
+                  android:strokeWidth="11"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round"
+                  android:fillColor="#00000000"
+                  android:pathData="M48,24 L48,84 M48,24 L68,24 Q84,24 84,39 Q84,54 68,54 L48,54 M65,54 L84,84"/>
+              <path
+                  android:strokeColor="#FF1744"
+                  android:strokeWidth="11"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round"
+                  android:fillColor="#00000000"
+                  android:pathData="M22,24 L22,84 M22,24 L44,24 Q60,24 60,39 Q60,54 44,54 L22,54"/>
           </vector>
           ''')
 
@@ -1087,6 +1085,7 @@ jobs:
           }
           ''')
 
+          # OFFER READER - Salvare DOAR la "Finalizeaza cursa"
           w('app/src/main/java/ro/profitride/OfferReader.kt', r'''
           package ro.profitride
 
@@ -1136,13 +1135,17 @@ jobs:
               private var vibrator: Vibrator? = null
               private val sb = StringBuilder(2048)
               private var lastParseAt = 0L
-              private var lastKey = ""
+              private var lastOfferKey = ""
 
               private var pendingOffer: OfferParser.Offer? = null
-              private var pendingResult: Calc.Result? = null
-              private var offerSeenAt = 0L
-              private var offerDismissed = false
-              private var offerSaved = false
+              private var wasFinished = false
+              private var lastSavedPrice = 0f
+              private var lastSavedKm = 0f
+              private var lastSavedAt = 0L
+
+              private fun logDbg(msg: String) {
+                  try { openFileOutput("debug.txt", Context.MODE_APPEND).bufferedWriter().use { it.appendLine("${System.currentTimeMillis()}: $msg") } } catch (_: Exception) {}
+              }
 
               private val screenOff = object : BroadcastReceiver() {
                   override fun onReceive(c: Context?, i: Intent?) {
@@ -1175,73 +1178,149 @@ jobs:
                   val raw = sb.toString().lowercase()
                   if (raw.isEmpty()) return
 
-                  val hasAccept = raw.contains("accept")
-
-                  if (hasAccept) {
+                  // 1. OFERTA (doar preview)
+                  if (raw.contains("accept")) {
                       val offer = OfferParser.parse(raw, avgSpeed())
                       if (offer != null) {
                           val key = "${offer.priceRon}|${offer.pickupKm}|${offer.tripKm}"
-                          if (key != lastKey) {
-                              lastKey = key
-                              offerSeenAt = System.currentTimeMillis()
-                              offerDismissed = false
-                              offerSaved = false
-                              val result = Calc.compute(this, offer)
+                          if (key != lastOfferKey) {
+                              lastOfferKey = key
                               pendingOffer = offer
-                              pendingResult = result
+                              val result = Calc.compute(this, offer)
+                              logDbg("OFERTA preview: $key")
                               showOverlay(result)
                               speak(result)
                               vibrate(result.color)
                           }
                       }
-                  } else {
-                      if (pendingOffer != null && !offerDismissed) {
-                          offerDismissed = true
-                      }
                   }
 
-                  val finished = raw.contains("finalizează") || raw.contains("finalizeaza") ||
-                                 raw.contains("încheie") || raw.contains("incheie") ||
-                                 raw.contains("ați ajuns") || raw.contains("ati ajuns") ||
-                                 raw.contains("end trip") || raw.contains("trip completed")
+                  // 2. FINALIZARE (sursa de adevar)
+                  val finished = raw.contains("cursă finalizată") ||
+                                 raw.contains("cursa finalizata") ||
+                                 raw.contains("ai câștigat") ||
+                                 raw.contains("ai castigat") ||
+                                 raw.contains("sumarul cursei") ||
+                                 raw.contains("trip completed") ||
+                                 raw.contains("ride finished")
 
-                  if (finished && pendingOffer != null && offerDismissed && !offerSaved) {
-                      val elapsed = System.currentTimeMillis() - offerSeenAt
-                      if (elapsed < 30_000) {
-                          return
+                  if (finished && !wasFinished) {
+                      saveCompletedTrip(raw)
+                  }
+                  wasFinished = finished
+              }
+
+              private fun saveCompletedTrip(raw: String) {
+                  val now = System.currentTimeMillis()
+                  val finalPrice = extractPriceFromFinalization(raw)
+                  if (finalPrice == null || finalPrice < 1f) {
+                      logDbg("SKIP: nu am gasit pret pe ecranul de finalizare")
+                      return
+                  }
+                  val (pickupKm, tripKm) = extractKmFromFinalization(raw, pendingOffer)
+                  val totalKm = pickupKm + tripKm
+
+                  if (Math.abs(finalPrice - lastSavedPrice) < 0.01f &&
+                      Math.abs(totalKm - lastSavedKm) < 0.1f &&
+                      now - lastSavedAt < 5 * 60 * 1000) {
+                      logDbg("SKIP: duplicat ($finalPrice RON, $totalKm km)")
+                      return
+                  }
+
+                  val realOffer = OfferParser.Offer(
+                      priceRon = finalPrice,
+                      pickupKm = pickupKm,
+                      tripKm = tripKm,
+                      pickupMinutes = pendingOffer?.pickupMinutes ?: 0,
+                      tripMinutes = pendingOffer?.tripMinutes ?: 0
+                  )
+                  val r = Calc.compute(this, realOffer)
+
+                  try {
+                      openFileOutput("offers.csv", Context.MODE_APPEND).bufferedWriter().use {
+                          it.appendLine("$now,${finalPrice},${pickupKm},${tripKm},${r.grossPerKm},${if (r.totalMin > 0) r.netProfit/(r.totalMin/60f) else 0f},${r.totalExpenses},${r.netProfit},${r.commissionCut},${r.fuelCost},${r.extraCost}")
                       }
-                      val o = pendingOffer!!
-                      val r = pendingResult!!
-                      try {
-                          var skip = false
-                          try {
-                              val lines = openFileInput("offers.csv").bufferedReader().use { it.readLines() }
-                              val last = lines.lastOrNull { it.isNotBlank() }?.split(",")
-                              if (last != null && last.size >= 4) {
-                                  val lastTs = last[0].toLongOrNull() ?: 0L
-                                  val lastPrice = last[1].toFloatOrNull() ?: 0f
-                                  val lastPk = last[2].toFloatOrNull() ?: 0f
-                                  val lastTp = last[3].toFloatOrNull() ?: 0f
-                                  if (System.currentTimeMillis() - lastTs < 5*60*1000 &&
-                                      Math.abs(lastPrice - o.priceRon) < 0.1f &&
-                                      Math.abs(lastPk - o.pickupKm) < 0.1f &&
-                                      Math.abs(lastTp - o.tripKm) < 0.1f) {
-                                      skip = true
-                                  }
-                              }
-                          } catch (_: Exception) {}
-
-                          if (!skip) {
-                              openFileOutput("offers.csv", Context.MODE_APPEND).bufferedWriter().use {
-                                  it.appendLine("${System.currentTimeMillis()},${o.priceRon},${o.pickupKm},${o.tripKm},${r.grossPerKm},${if (r.totalMin > 0) r.netProfit/(r.totalMin/60f) else 0f},${r.totalExpenses},${r.netProfit},${r.commissionCut},${r.fuelCost},${r.extraCost}")
-                              }
-                              handler.post { Toast.makeText(this, "Cursă finalizată! Salvată.", Toast.LENGTH_SHORT).show() }
-                          }
-                      } catch (_: Exception) {}
-                      offerSaved = true
+                      lastSavedPrice = finalPrice
+                      lastSavedKm = totalKm
+                      lastSavedAt = now
                       pendingOffer = null
-                      pendingResult = null
+                      logDbg("SALVAT: $finalPrice RON, $totalKm km, ${r.grossPerKm} RON/km")
+                      handler.post {
+                          Toast.makeText(this@OfferReader,
+                              "✅ Salvat: ${"%.2f".format(finalPrice)} RON · ${"%.1f".format(totalKm)} km",
+                              Toast.LENGTH_LONG).show()
+                      }
+                      showFinalConfirm(r)
+                  } catch (e: Exception) {
+                      logDbg("EROARE SALVARE: ${e.message}")
                   }
+              }
+
+              private fun extractPriceFromFinalization(raw: String): Float? {
+                  val explicitPatterns = listOf(
+                      Regex("""tarif[^\d]*(\d+[.,]?\d*)\s*(?:RON|lei)""", RegexOption.IGNORE_CASE),
+                      Regex("""total[^\d]*(\d+[.,]?\d*)\s*(?:RON|lei)""", RegexOption.IGNORE_CASE),
+                      Regex("""ai (?:câștigat|castigat)[^\d]*(\d+[.,]?\d*)\s*(?:RON|lei)""", RegexOption.IGNORE_CASE),
+                      Regex("""încasat[^\d]*(\d+[.,]?\d*)\s*(?:RON|lei)""", RegexOption.IGNORE_CASE)
+                  )
+                  for (p in explicitPatterns) {
+                      p.find(raw)?.let { m ->
+                          val v = m.groupValues[1].replace(',', '.').toFloatOrNull()
+                          if (v != null && v in 1f..2000f) return v
+                      }
+                  }
+                  return Regex("""(\d+(?:[.,]\d+)?)\s*(?:RON|lei)""", RegexOption.IGNORE_CASE)
+                      .findAll(raw)
+                      .mapNotNull { it.groupValues[1].replace(',', '.').toFloatOrNull() }
+                      .filter { it in 3f..2000f }
+                      .maxOrNull()
+              }
+
+              private fun extractKmFromFinalization(raw: String, pending: OfferParser.Offer?): Pair<Float, Float> {
+                  if (pending != null) return Pair(pending.pickupKm, pending.tripKm)
+                  val kms = Regex("""(\d+(?:[.,]\d+)?)\s*km""", RegexOption.IGNORE_CASE)
+                      .findAll(raw).map { it.groupValues[1].replace(',', '.').toFloat() }.toList()
+                  if (kms.size >= 2) return Pair(kms[0], kms[1])
+                  if (kms.size == 1) return Pair(0f, kms[0])
+                  return Pair(0f, 0f)
+              }
+
+              private fun showFinalConfirm(r: Calc.Result) {
+                  removeOverlay()
+                  val density = resources.displayMetrics.density
+                  val container = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#EE111111"))
+                          cornerRadius = 30f * density
+                          setStroke((5 * density).toInt(), Color.parseColor("#4CAF50"))
+                      }
+                      setPadding((20*density).toInt(), (16*density).toInt(), (20*density).toInt(), (16*density).toInt())
+                      elevation = 25f
+                  }
+                  val title = TextView(this).apply {
+                      text = "✅ Cursă salvată"
+                      setTextColor(Color.parseColor("#4CAF50"))
+                      textSize = 16f
+                      typeface = Typeface.DEFAULT_BOLD
+                      gravity = Gravity.CENTER
+                  }
+                  val detail = TextView(this).apply {
+                      text = "%.2f RON · %.1f km · %.2f RON/km".format(r.priceRon, r.totalKm, r.grossPerKm)
+                      setTextColor(Color.WHITE)
+                      textSize = 13f
+                      gravity = Gravity.CENTER
+                      setPadding(0, (6*density).toInt(), 0, 0)
+                  }
+                  container.addView(title)
+                  container.addView(detail)
+                  val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                      else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+                  val params = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                      type, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
+                  ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; x = 0; y = (150*density).toInt() }
+                  try { wm.addView(container, params); overlay = container; handler.postDelayed({ removeOverlay() }, 4000L) } catch (_: Exception) {}
               }
 
               private fun avgSpeed(): Float {
@@ -1268,7 +1347,6 @@ jobs:
               private fun showOverlay(r: Calc.Result) {
                   removeOverlay()
                   val density = resources.displayMetrics.density
-
                   val container = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       background = GradientDrawable().apply {
@@ -1280,7 +1358,6 @@ jobs:
                       setOnTouchListener(dragListener())
                       elevation = 25f
                   }
-
                   val header = TextView(this).apply {
                       text = r.label
                       setTextColor(r.color)
@@ -1290,15 +1367,9 @@ jobs:
                       setPadding(0, 0, 0, (8*density).toInt())
                   }
                   container.addView(header)
-
-                  val row = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
-                      gravity = Gravity.CENTER
-                  }
-
+                  val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
                   val gaugeSize = (130 * density).toInt()
                   val margin = (6*density).toInt()
-
                   val gauge1 = GaugeView(this).apply {
                       percent = (r.grossPerKm / 5f).coerceIn(0f, 1f)
                       arcColor = r.color
@@ -1306,7 +1377,6 @@ jobs:
                       labelText = "RON/km"
                       layoutParams = LinearLayout.LayoutParams(gaugeSize, gaugeSize).apply { marginEnd = margin }
                   }
-
                   val gauge2 = GaugeView(this).apply {
                       val ratio = if (r.priceRon > 0f) r.netProfit / r.priceRon else 0f
                       percent = ratio.coerceIn(0f, 1f)
@@ -1316,11 +1386,9 @@ jobs:
                       subLabelText = "Chelt: %.0f".format(r.totalExpenses)
                       layoutParams = LinearLayout.LayoutParams(gaugeSize, gaugeSize).apply { marginStart = margin }
                   }
-
                   row.addView(gauge1)
                   row.addView(gauge2)
                   container.addView(row)
-
                   val footer = TextView(this).apply {
                       text = "%.1f km · %d min · %.2f RON".format(r.totalKm, r.totalMin, r.priceRon)
                       setTextColor(Color.parseColor("#CCCCCC"))
@@ -1329,7 +1397,6 @@ jobs:
                       setPadding(0, (8*density).toInt(), 0, 0)
                   }
                   container.addView(footer)
-
                   val closeBtn = TextView(this).apply {
                       text = "✕"
                       setTextColor(Color.WHITE)
@@ -1339,19 +1406,12 @@ jobs:
                       setOnClickListener { removeOverlay() }
                   }
                   container.addView(closeBtn)
-
-                  val type = if (Build.VERSION.SDK_INT >= 26)
-                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                  else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
-
+                  val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                      else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
                   val params = WindowManager.LayoutParams(
-                      WindowManager.LayoutParams.WRAP_CONTENT,
-                      WindowManager.LayoutParams.WRAP_CONTENT,
-                      type,
-                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                      PixelFormat.TRANSLUCENT
+                      WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                      type, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
                   ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; x = 0; y = (100*density).toInt() }
-
                   try { wm.addView(container, params); overlay = container; container.tag = params; handler.postDelayed(autoDismiss, 25_000L) } catch (_: Exception) {}
               }
 
@@ -1453,7 +1513,6 @@ jobs:
                       setPadding(0, 0, 0, (14*density).toInt())
                   }
                   panel.addView(info)
-
                   fun addBtn(text: String, color: Int, onClick: () -> Unit) {
                       val b = Button(this).apply {
                           this.text = text
@@ -1465,7 +1524,6 @@ jobs:
                       }
                       panel.addView(b)
                   }
-
                   addBtn("📊 Sumar Zilnic", Color.parseColor("#9C27B0")) {
                       removeSidePanel()
                       val i = Intent(this, SummaryActivity::class.java); i.putExtra("PERIOADA", "DAY"); i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(i)
@@ -1482,7 +1540,6 @@ jobs:
                       isStopped = true; removeSidePanel(); removeSideBar()
                       handler.post { Toast.makeText(this@OfferReader, "Serviciu oprit", Toast.LENGTH_SHORT).show() }
                   }
-
                   val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                       else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
                   val params = WindowManager.LayoutParams((280 * density).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, type,
