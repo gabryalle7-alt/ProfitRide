@@ -1,0 +1,1148 @@
+name: Build ProfitRide APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.2
+
+      - name: Setup keystore
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ ! -f app/keystore.b64 ]; then
+            echo "Prima rulare - generez keystore..."
+            mkdir -p app
+            keytool -genkeypair -v -keystore app/release.jks -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias profitride -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" \
+              -dname "CN=ProfitRide, OU=Dev, O=ProfitRide, L=Bucuresti, S=Bucuresti, C=RO"
+            base64 -w0 app/release.jks > app/keystore.b64
+            rm app/release.jks
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add app/keystore.b64
+            git commit -m "Auto: keystore persistent"
+            git push
+            base64 -d app/keystore.b64 > app/release.jks
+            echo "Keystore creat si salvat"
+          else
+            echo "Keystore existent - decodez..."
+            base64 -d app/keystore.b64 > app/release.jks
+          fi
+
+      - name: Create project files with Python
+        run: |
+          python3 - <<'PYEOF'
+          import os
+
+          def w(p, t):
+              d = os.path.dirname(p)
+              if d: os.makedirs(d, exist_ok=True)
+              open(p, 'w', encoding='utf-8').write(t.strip() + '\n')
+
+          w('README.md', '# ProfitRide')
+          w('local.properties', 'sdk.dir=' + os.environ['ANDROID_HOME'])
+          w('gradle.properties', 'android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8')
+          w('settings.gradle', '''
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "ProfitRide"
+          include ':app'
+          ''')
+          w('build.gradle', '''
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+          }
+          ''')
+          w('app/build.gradle', '''
+          plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+          def ksPwd = System.getenv("KEYSTORE_PASSWORD")
+          if (!ksPwd) throw new GradleException("Missing secret KEYSTORE_PASSWORD")
+          android {
+              namespace 'ro.profitride'
+              compileSdk 34
+              defaultConfig { applicationId "ro.profitride"; minSdk 24; targetSdk 34; versionCode 32; versionName "4.9" }
+              signingConfigs { release { storeFile file("release.jks"); storePassword ksPwd; keyAlias "profitride"; keyPassword ksPwd } }
+              buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false }; debug { signingConfig signingConfigs.release } }
+              compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+              kotlinOptions { jvmTarget = '17' }
+          }
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.work:work-runtime-ktx:2.9.0'
+          }
+          ''')
+
+          w('app/src/main/AndroidManifest.xml', '''
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+              <uses-permission android:name="android.permission.VIBRATE"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <queries><intent><action android:name="android.intent.action.TTS_SERVICE"/></intent></queries>
+              <application android:allowBackup="true" android:icon="@drawable/ic_car" android:label="ProfitRide"
+                  android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+                  </activity>
+                  <activity android:name=".SettingsActivity"/>
+                  <activity android:name=".SetupActivity"/>
+                  <activity android:name=".SummaryActivity"/>
+                  <activity android:name=".VehicleActivity"/>
+                  <service android:name=".OfferReader" android:exported="true" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter>
+                      <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config"/>
+                  </service>
+              </application>
+          </manifest>
+          ''')
+
+          w('app/src/main/res/drawable/ic_car.xml', '''
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#000000" android:pathData="M0,0h108v108h-108z"/>
+              <path android:strokeColor="#FF1744" android:strokeWidth="11" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M48,24 L48,84 M48,24 L68,24 Q84,24 84,39 Q84,54 68,54 L48,54 M65,54 L84,84"/>
+              <path android:strokeColor="#FF1744" android:strokeWidth="11" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M22,24 L22,84 M22,24 L44,24 Q60,24 60,39 Q60,54 44,54 L22,54"/>
+          </vector>
+          ''')
+
+          w('app/src/main/res/xml/accessibility_service_config.xml', '''
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask" android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+              android:canRetrieveWindowContent="true" android:notificationTimeout="300"
+              android:description="@string/acc_desc"/>
+          ''')
+
+          w('app/src/main/res/values/strings.xml', '''
+          <resources>
+              <string name="app_name">ProfitRide</string>
+              <string name="acc_desc">Citeste ofertele Bolt/Uber</string>
+          </resources>
+          ''')
+
+          w('app/src/main/res/drawable/bg_gradient.xml', '''
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"><gradient android:startColor="#E3F2FD" android:endColor="#FFFFFF" android:angle="270" /></shape>
+          ''')
+          w('app/src/main/res/drawable/card_bg.xml', '''
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"><solid android:color="#FFFFFF"/><corners android:radius="16dp"/></shape>
+          ''')
+          w('app/src/main/res/drawable/rounded_btn.xml', '''
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"><solid android:color="#FFFFFF"/><corners android:radius="30dp"/></shape>
+          ''')
+
+          w('app/src/main/res/layout/activity_main.xml', '''
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:background="@drawable/bg_gradient">
+          <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content">
+              <TextView android:id="@+id/tvStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="#111111" android:paddingTop="24dp" android:paddingBottom="24dp" android:gravity="center" android:textSize="22sp" android:textStyle="bold" android:textColor="#888888" android:elevation="8dp" android:text="Introdu datele cursei"/>
+              <LinearLayout android:orientation="vertical" android:padding="20dp" android:layout_width="match_parent" android:layout_height="wrap_content">
+                  <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="6dp" android:outlineProvider="background" android:padding="16dp" android:layout_marginBottom="16dp">
+                      <TextView android:text="Km până la preluare" android:textColor="#757575" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                      <EditText android:id="@+id/etPickup" android:inputType="numberDecimal" android:hint="0.0" android:textSize="20sp" android:textStyle="bold" android:background="@null" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="6dp" android:outlineProvider="background" android:padding="16dp" android:layout_marginBottom="16dp">
+                      <TextView android:text="Km cursă" android:textColor="#757575" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                      <EditText android:id="@+id/etTrip" android:inputType="numberDecimal" android:hint="0.0" android:textSize="20sp" android:textStyle="bold" android:background="@null" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="6dp" android:outlineProvider="background" android:padding="16dp" android:layout_marginBottom="20dp">
+                      <TextView android:text="Tarif oferit (RON)" android:textColor="#757575" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                      <EditText android:id="@+id/etPrice" android:inputType="numberDecimal" android:hint="0.0" android:textSize="20sp" android:textStyle="bold" android:background="@null" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <Button android:id="@+id/btnCalc" android:text="CALCULEAZĂ" android:background="@drawable/rounded_btn" android:backgroundTint="#4CAF50" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="8dp" android:layout_width="match_parent" android:layout_height="56dp"/>
+                  <TextView android:id="@+id/tvResult" android:layout_marginTop="16dp" android:background="#111111" android:padding="16dp" android:elevation="4dp" android:textSize="14sp" android:fontFamily="monospace" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <TextView android:text="Sumare" android:textStyle="bold" android:textSize="18sp" android:layout_marginTop="24dp" android:textColor="#333333" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  <LinearLayout android:orientation="horizontal" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content">
+                      <Button android:id="@+id/btnSumarZilnic" android:text="Zilnic" android:background="@drawable/rounded_btn" android:backgroundTint="#9C27B0" android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="12sp" android:elevation="4dp" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+                      <Button android:id="@+id/btnSumarSaptamanal" android:text="Săpt." android:background="@drawable/rounded_btn" android:backgroundTint="#4CAF50" android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="12sp" android:elevation="4dp" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+                      <Button android:id="@+id/btnSumarLunar" android:text="Lunar" android:background="@drawable/rounded_btn" android:backgroundTint="#FF9800" android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="12sp" android:elevation="4dp" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+                      <Button android:id="@+id/btnSumarAnual" android:text="Anual" android:background="@drawable/rounded_btn" android:backgroundTint="#2196F3" android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="12sp" android:elevation="4dp" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <Button android:id="@+id/btnVehicle" android:text="Rubrică Autovehicul" android:background="@drawable/rounded_btn" android:backgroundTint="#E91E63" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_marginTop="16dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/btnSettings" android:text="Setări costuri" android:background="@drawable/rounded_btn" android:backgroundTint="#2196F3" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/btnAccessibility" android:text="Activează citirea" android:background="@drawable/rounded_btn" android:backgroundTint="#FF9800" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/btnOverlay" android:text="Permite overlay" android:background="@drawable/rounded_btn" android:backgroundTint="#9C27B0" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/btnDebug" android:text="Vezi log Debug" android:background="@drawable/rounded_btn" android:backgroundTint="#F44336" android:textColor="#FFFFFF" android:elevation="6dp" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/btnStopAll" android:text="OPRIRE TOTALĂ" android:background="@drawable/rounded_btn" android:backgroundTint="#B71C1C" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="8dp" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              </LinearLayout>
+          </LinearLayout>
+          </ScrollView>
+          ''')
+
+          w('app/src/main/res/layout/activity_summary.xml', '''
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:orientation="vertical" android:padding="24dp" android:background="@drawable/bg_gradient" android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView android:id="@+id/tvSummaryTitle" android:textSize="22sp" android:textStyle="bold" android:textColor="#333333" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="24dp"/>
+              <TextView android:id="@+id/tvSummaryContent" android:textSize="15sp" android:textColor="#111111" android:fontFamily="monospace" android:background="#FFFFFF" android:padding="20dp" android:elevation="8dp" android:lineSpacingExtra="8dp" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="24dp"/>
+              <Button android:id="@+id/btnResetSummary" android:text="RESETEAZĂ" android:background="@drawable/rounded_btn" android:backgroundTint="#F44336" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+          </LinearLayout>
+          ''')
+
+          w('app/src/main/res/layout/activity_vehicle.xml', '''
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@drawable/bg_gradient">
+          <LinearLayout android:orientation="vertical" android:padding="20dp" android:layout_width="match_parent" android:layout_height="wrap_content">
+              <TextView android:text="Alerte Expirare" android:textSize="22sp" android:textStyle="bold" android:textColor="#333333" android:layout_marginBottom="20dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="RCA" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etRca" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="RCA Persoane" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etRcaPers" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="RCA Bagaje" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etRcaBag" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="ITP" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etItp" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="Stingător" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etStingator" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="Trusă Medicală" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etTrusa" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="Copie Conformă" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etCopie" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="Ecusoane" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etEcusoane" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/card_bg" android:elevation="4dp" android:outlineProvider="background" android:padding="12dp" android:layout_marginBottom="8dp"><TextView android:text="Fișă Medicală" android:textStyle="bold" android:textColor="#E91E63" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/><EditText android:id="@+id/etFisa" android:focusable="false" android:clickable="true" android:hint="Alege data" android:inputType="none" android:background="@null" android:textStyle="bold" android:layout_width="match_parent" android:layout_height="wrap_content"/></LinearLayout>
+              <LinearLayout android:orientation="horizontal" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="wrap_content">
+                  <Button android:id="@+id/btnSaveVehicle" android:text="SALVEAZĂ" android:background="@drawable/rounded_btn" android:backgroundTint="#4CAF50" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_weight="1" android:layout_width="0dp" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/btnResetVehicle" android:text="RESET" android:background="@drawable/rounded_btn" android:backgroundTint="#F44336" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_marginLeft="12dp" android:layout_weight="1" android:layout_width="0dp" android:layout_height="wrap_content"/>
+              </LinearLayout>
+          </LinearLayout>
+          </ScrollView>
+          ''')
+
+          w('app/src/main/res/layout/activity_settings.xml', '''
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@drawable/bg_gradient">
+          <LinearLayout android:orientation="vertical" android:padding="20dp" android:layout_width="match_parent" android:layout_height="wrap_content">
+              <TextView android:text="Preț benzină (RON/L)" android:textStyle="bold" android:textColor="#333333" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <EditText android:id="@+id/etFuelPrice" android:inputType="numberDecimal" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <TextView android:text="Consum (L/100km)" android:textStyle="bold" android:textColor="#333333" android:layout_marginTop="12dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <EditText android:id="@+id/etConsumption" android:inputType="numberDecimal" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <TextView android:text="Comision (%)" android:textStyle="bold" android:textColor="#333333" android:layout_marginTop="12dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <EditText android:id="@+id/etCommission" android:inputType="numberDecimal" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <TextView android:text="Uzură (RON/km)" android:textStyle="bold" android:textColor="#333333" android:layout_marginTop="12dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <EditText android:id="@+id/etExtraCost" android:inputType="numberDecimal" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <TextView android:text="Prag minim RON/km" android:textStyle="bold" android:textColor="#333333" android:layout_marginTop="12dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <EditText android:id="@+id/etMinPerKm" android:inputType="numberDecimal" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <TextView android:text="Viteză medie (km/h)" android:textStyle="bold" android:textColor="#333333" android:layout_marginTop="12dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <EditText android:id="@+id/etAvgSpeed" android:inputType="numberDecimal" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <CheckBox android:id="@+id/cbTtsEnabled" android:text="Anunț vocal" android:textColor="#333333" android:layout_marginTop="12dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              <Button android:id="@+id/btnSave" android:text="SALVEAZĂ" android:background="@drawable/rounded_btn" android:backgroundTint="#4CAF50" android:textColor="#FFFFFF" android:textStyle="bold" android:elevation="6dp" android:layout_marginTop="24dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+          </LinearLayout>
+          </ScrollView>
+          ''')
+
+          w('app/src/main/res/layout/activity_setup.xml', '''
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
+              <LinearLayout android:orientation="vertical" android:padding="16dp" android:layout_width="match_parent" android:layout_height="wrap_content">
+                  <TextView android:text="Ghid Honor" android:textSize="18sp" android:textStyle="bold" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              </LinearLayout>
+          </ScrollView>
+          ''')
+
+          w('app/src/main/java/ro/profitride/OfferParser.kt', '''
+          package ro.profitride
+
+          object OfferParser {
+              data class Offer(val priceRon: Float, val pickupKm: Float, val tripKm: Float, val pickupMinutes: Int, val tripMinutes: Int)
+              private val PRICE_LBL = Regex("""(\\d+(?:[.,]\\d{1,2})?)\\s*(?:RON|lei)""", RegexOption.IGNORE_CASE)
+              private val PRICE_ANY = Regex("""(\\d+(?:[.,]\\d{1,2})?)""")
+              private val KM_RE = Regex("""(\\d+(?:[.,]\\d+)?)\\s*km""", RegexOption.IGNORE_CASE)
+              private val MIN_RE = Regex("""(\\d+)\\s*min""", RegexOption.IGNORE_CASE)
+
+              fun parse(text: String, avgSpeed: Float = 25f): Offer? {
+                  return try {
+                      val price = findPrice(text) ?: return null
+                      val kms = KM_RE.findAll(text).mapNotNull { it.groupValues[1].replace(',', '.').toFloatOrNull() }.toList()
+                      val mins = MIN_RE.findAll(text).mapNotNull { it.groupValues[1].toIntOrNull() }.toList()
+                      if (kms.isEmpty()) return null
+                      var pk = 0f; var tk = 0f
+                      if (kms.size >= 2) { pk = kms[0]; tk = kms[1] } else tk = kms[0]
+                      var pm = 0; var tm = 0
+                      if (mins.size >= 2) { pm = mins[0]; tm = mins[1] } else if (mins.size == 1) tm = mins[0]
+                      if (tm == 0) tm = ((tk / avgSpeed) * 60).toInt()
+                      if (pm == 0) pm = ((pk / avgSpeed) * 60).toInt()
+                      Offer(price, pk, tk, pm, tm)
+                  } catch (_: Throwable) { null }
+              }
+
+              private fun findPrice(text: String): Float? {
+                  val lbl = PRICE_LBL.findAll(text).mapNotNull { it.groupValues[1].replace(',', '.').toFloatOrNull() }.filter { it in 3f..2000f }.maxOrNull()
+                  if (lbl != null) return lbl
+                  return PRICE_ANY.findAll(text).mapNotNull { m ->
+                      val v = m.groupValues[1]
+                      val after = text.substring(m.range.last + 1).take(10).lowercase()
+                      if (after.contains("km") || after.contains("min") || after.contains("ron")) null else v.replace(',', '.').toFloatOrNull()
+                  }.filter { it in 5f..500f }.maxOrNull()
+              }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/Calc.kt', r'''
+          package ro.profitride
+          import android.content.Context
+          import android.graphics.Color
+
+          object Calc {
+              data class Result(val text: String, val color: Int, val label: String, val grossPerKm: Float, val netProfit: Float, val totalExpenses: Float, val commissionCut: Float, val fuelCost: Float, val extraCost: Float, val totalKm: Float, val totalMin: Int, val priceRon: Float, val speech: String)
+              private val GREEN = Color.parseColor("#4CAF50")
+              private val YELLOW = Color.parseColor("#FFEB3B")
+              private val RED = Color.parseColor("#FF5252")
+
+              fun compute(ctx: Context, o: OfferParser.Offer): Result {
+                  val p = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+                  val fuel = p.getFloat("fuelPrice", 7.5f)
+                  val cons = p.getFloat("consumption", 7f)
+                  val com = p.getFloat("commission", 20f)
+                  val extra = p.getFloat("extraCost", 0.5f)
+                  val minKm = p.getFloat("minPerKm", 2.5f)
+                  val totalKm = o.pickupKm + o.tripKm
+                  val totalMin = o.pickupMinutes + o.tripMinutes
+                  val grossKm = if (totalKm > 0f) o.priceRon / totalKm else 0f
+                  val comCut = o.priceRon * com / 100f
+                  val fuelCost = totalKm / 100f * cons * fuel
+                  val extraCost = totalKm * extra
+                  val exp = comCut + fuelCost + extraCost
+                  val net = o.priceRon - exp
+                  val (label, color) = when {
+                      grossKm >= minKm * 1.2f -> "PROFITABIL" to GREEN
+                      grossKm >= minKm -> "MEDIU" to YELLOW
+                      else -> "NEPROFITABIL" to RED
+                  }
+                  val text = "[%s]\n%.2f RON/km\n%.1f km · %d min\n%.2f RON".format(label, grossKm, totalKm, totalMin, o.priceRon)
+                  val speech = when (label) {
+                      "PROFITABIL" -> "Profitabil. %.1f lei pe km.".format(grossKm)
+                      "MEDIU" -> "Mediu."
+                      else -> "Neprofitabil."
+                  }
+                  return Result(text, color, label, grossKm, net, exp, comCut, fuelCost, extraCost, totalKm, totalMin, o.priceRon, speech)
+              }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/GaugeView.kt', '''
+          package ro.profitride
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.RectF
+          import android.graphics.Typeface
+          import android.view.View
+
+          class GaugeView(context: Context) : View(context) {
+              var percent: Float = 0f
+              var arcColor: Int = Color.GREEN
+              var valueText: String = ""
+              var labelText: String = ""
+              var subLabelText: String = ""
+              private val bgArc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.parseColor("#333333"); strokeCap = Paint.Cap.ROUND }
+              private val fgArc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+              private val valP = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD }
+              private val lblP = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; color = Color.WHITE }
+              private val subP = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; color = Color.parseColor("#AAAAAA") }
+
+              override fun onDraw(canvas: Canvas) {
+                  try {
+                      super.onDraw(canvas)
+                      val w = width.toFloat(); val h = height.toFloat()
+                      if (w <= 0 || h <= 0) return
+                      val d = resources.displayMetrics.density
+                      val stroke = 12f * d
+                      val cx = w / 2; val cy = h / 2
+                      val r = Math.min(w, h) / 2 - stroke / 2 - 2f * d
+                      if (r <= 0) return
+                      bgArc.strokeWidth = stroke; fgArc.strokeWidth = stroke
+                      val rf = RectF(cx - r, cy - r, cx + r, cy + r)
+                      canvas.drawArc(rf, 135f, 270f, false, bgArc)
+                      fgArc.color = arcColor
+                      canvas.drawArc(rf, 135f, 270f * percent.coerceIn(0f, 1f), false, fgArc)
+                      valP.color = arcColor
+                      valP.textSize = Math.min(w, h) * 0.30f
+                      canvas.drawText(valueText, cx, cy + valP.textSize * 0.32f, valP)
+                      lblP.textSize = Math.min(w, h) * 0.07f
+                      canvas.drawText(labelText, cx, cy + valP.textSize * 0.34f + lblP.textSize * 1.1f, lblP)
+                      if (subLabelText.isNotEmpty()) {
+                          subP.textSize = Math.min(w, h) * 0.055f
+                          canvas.drawText(subLabelText, cx, cy - Math.min(w, h) * 0.14f, subP)
+                      }
+                  } catch (_: Throwable) {}
+              }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/MainActivity.kt', '''
+          package ro.profitride
+          import android.Manifest
+          import android.animation.ArgbEvaluator
+          import android.animation.ValueAnimator
+          import android.app.AlertDialog
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.Settings
+          import android.text.Editable
+          import android.text.TextWatcher
+          import android.view.MotionEvent
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.core.content.ContextCompat
+          import androidx.work.ExistingPeriodicWorkPolicy
+          import androidx.work.PeriodicWorkRequestBuilder
+          import androidx.work.WorkManager
+          import java.util.concurrent.TimeUnit
+
+          class MainActivity : AppCompatActivity() {
+              private var etPickup: EditText? = null
+              private var etTrip: EditText? = null
+              private var etPrice: EditText? = null
+              private var tvStatus: TextView? = null
+              private var tvResult: TextView? = null
+              private val handler = Handler(Looper.getMainLooper())
+              private val calcRunnable = Runnable { safeCalculate() }
+              private var ignoreWatcher = false
+
+              private val watcher = object : TextWatcher {
+                  override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                  override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                      if (ignoreWatcher) return
+                      handler.removeCallbacks(calcRunnable)
+                      handler.postDelayed(calcRunnable, 250L)
+                  }
+                  override fun afterTextChanged(s: Editable?) {}
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  try { setContentView(R.layout.activity_main) } catch (e: Throwable) {
+                      try { Toast.makeText(this, "Eroare: ${e.message}", Toast.LENGTH_LONG).show() } catch (_: Throwable) {}
+                      finish(); return
+                  }
+                  try { initViews() } catch (e: Throwable) { logD("initViews: ${e.message}") }
+                  try { initListeners() } catch (e: Throwable) { logD("initListeners: ${e.message}") }
+                  handler.postDelayed({ try { requestNotifPermission() } catch (e: Throwable) { logD("notif: ${e.message}") } }, 500L)
+                  handler.postDelayed({ Thread { try { initWorkManager() } catch (e: Throwable) { logD("wm: ${e.message}") } }.start() }, 1500L)
+              }
+
+              private fun logD(msg: String) {
+                  try { openFileOutput("debug.txt", MODE_APPEND).bufferedWriter().use { it.appendLine("${System.currentTimeMillis()}: INIT $msg") } } catch (_: Throwable) {}
+              }
+
+              private fun requestNotifPermission() {
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                          ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+                      }
+                  }
+              }
+
+              private fun initWorkManager() {
+                  val wr = PeriodicWorkRequestBuilder<ExpiryWorker>(1, TimeUnit.DAYS).build()
+                  WorkManager.getInstance(this).enqueueUniquePeriodicWork("ExpiryCheck", ExistingPeriodicWorkPolicy.KEEP, wr)
+              }
+
+              private fun initViews() {
+                  etPickup = findViewById(R.id.etPickup)
+                  etTrip = findViewById(R.id.etTrip)
+                  etPrice = findViewById(R.id.etPrice)
+                  tvStatus = findViewById(R.id.tvStatus)
+                  tvResult = findViewById(R.id.tvResult)
+                  etPickup?.addTextChangedListener(watcher)
+                  etTrip?.addTextChangedListener(watcher)
+                  etPrice?.addTextChangedListener(watcher)
+              }
+
+              private fun initListeners() {
+                  findViewById<Button>(R.id.btnCalc)?.setOnClickListener { safeCalculate() }
+                  findViewById<Button>(R.id.btnSumarZilnic)?.setOnClickListener { sum("DAY") }
+                  findViewById<Button>(R.id.btnSumarSaptamanal)?.setOnClickListener { sum("WEEK") }
+                  findViewById<Button>(R.id.btnSumarLunar)?.setOnClickListener { sum("MONTH") }
+                  findViewById<Button>(R.id.btnSumarAnual)?.setOnClickListener { sum("YEAR") }
+                  findViewById<Button>(R.id.btnVehicle)?.setOnClickListener { try { startActivity(Intent(this, VehicleActivity::class.java)) } catch (_: Exception) {} }
+                  findViewById<Button>(R.id.btnSettings)?.setOnClickListener { try { startActivity(Intent(this, SettingsActivity::class.java)) } catch (_: Exception) {} }
+                  findViewById<Button>(R.id.btnAccessibility)?.setOnClickListener {
+                      try {
+                          if (!Settings.canDrawOverlays(this)) Toast.makeText(this, "Acorda intai overlay", Toast.LENGTH_LONG).show()
+                          startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                      } catch (_: Exception) {}
+                  }
+                  findViewById<Button>(R.id.btnOverlay)?.setOnClickListener {
+                      try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
+                  }
+                  findViewById<Button>(R.id.btnDebug)?.setOnClickListener {
+                      try {
+                          val d = try { openFileInput("debug.txt").bufferedReader().use { it.readText() } } catch (e: Exception) { "Nu exista date." }
+                          AlertDialog.Builder(this).setTitle("Log:").setMessage(d.takeLast(5000)).setPositiveButton("OK", null).show()
+                      } catch (_: Exception) {}
+                  }
+                  findViewById<Button>(R.id.btnStopAll)?.setOnClickListener {
+                      try {
+                          AlertDialog.Builder(this).setTitle("Oprire").setMessage("Opresti serviciul?")
+                              .setPositiveButton("Da") { _, _ -> OfferReader.isStopped = true; finish() }
+                              .setNegativeButton("Nu", null).show()
+                      } catch (_: Exception) {}
+                  }
+                  listOf(R.id.btnCalc, R.id.btnSumarZilnic, R.id.btnSumarSaptamanal, R.id.btnSumarLunar,
+                      R.id.btnSumarAnual, R.id.btnVehicle, R.id.btnSettings, R.id.btnAccessibility,
+                      R.id.btnOverlay, R.id.btnDebug, R.id.btnStopAll).forEach { id ->
+                      findViewById<Button>(id)?.let { b ->
+                          b.setOnTouchListener { v, e ->
+                              when (e.action) {
+                                  MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(100).start()
+                                  MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
+                              }
+                              false
+                          }
+                      }
+                  }
+              }
+
+              private fun sum(p: String) { try { startActivity(Intent(this, SummaryActivity::class.java).putExtra("PERIOADA", p)) } catch (_: Exception) {} }
+
+              override fun onResume() {
+                  super.onResume()
+                  try {
+                      val wasStopped = OfferReader.isStopped
+                      OfferReader.isStopped = false
+                      if (wasStopped) OfferReader.instance?.showSideBar()
+                  } catch (_: Exception) {}
+              }
+
+              private fun safeCalculate() {
+                  try {
+                      val pp = etPickup?.text?.toString()?.toFloatOrNull() ?: 0f
+                      val t = etTrip?.text?.toString()?.toFloatOrNull() ?: 0f
+                      val pr = etPrice?.text?.toString()?.toFloatOrNull() ?: 0f
+                      if (pp == 0f && t == 0f && pr == 0f) {
+                          tvStatus?.text = "Introdu datele cursei"
+                          tvStatus?.setTextColor(Color.parseColor("#888888"))
+                          tvStatus?.setBackgroundColor(Color.parseColor("#111111"))
+                          tvResult?.text = ""
+                          return
+                      }
+                      val r = Calc.compute(this, OfferParser.Offer(pr, pp, t, 0, 0))
+                      tvStatus?.text = r.label
+                      tvStatus?.setTextColor(if (r.label == "MEDIU") Color.BLACK else Color.WHITE)
+                      tvResult?.text = r.text
+                      tvResult?.setTextColor(r.color)
+                      val a = ValueAnimator.ofObject(ArgbEvaluator(), Color.parseColor("#111111"), r.color)
+                      a.duration = 300
+                      a.addUpdateListener { anim -> (anim.animatedValue as? Int)?.let { tvStatus?.setBackgroundColor(it) } }
+                      a.start()
+                  } catch (_: Exception) {}
+              }
+
+              override fun onDestroy() { handler.removeCallbacks(calcRunnable); super.onDestroy() }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/VehicleActivity.kt', '''
+          package ro.profitride
+          import android.app.DatePickerDialog
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          import java.text.SimpleDateFormat
+          import java.util.Calendar
+          import java.util.Locale
+
+          class VehicleActivity : AppCompatActivity() {
+              private lateinit var prefs: android.content.SharedPreferences
+              private val df = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  try {
+                      setContentView(R.layout.activity_vehicle)
+                      prefs = getSharedPreferences("vehicle", MODE_PRIVATE)
+                      val fields = listOf(
+                          "rca" to findViewById<EditText>(R.id.etRca),
+                          "rcaPers" to findViewById<EditText>(R.id.etRcaPers),
+                          "rcaBag" to findViewById<EditText>(R.id.etRcaBag),
+                          "itp" to findViewById<EditText>(R.id.etItp),
+                          "stingator" to findViewById<EditText>(R.id.etStingator),
+                          "trusa" to findViewById<EditText>(R.id.etTrusa),
+                          "copie" to findViewById<EditText>(R.id.etCopie),
+                          "ecusoane" to findViewById<EditText>(R.id.etEcusoane),
+                          "fisa" to findViewById<EditText>(R.id.etFisa)
+                      )
+                      for ((k, et) in fields) {
+                          val s = prefs.getLong(k, 0L)
+                          if (s > 0) et.setText(df.format(Calendar.getInstance().apply { timeInMillis = s }.time))
+                          et.setOnClickListener { showDp(k, et) }
+                      }
+                      findViewById<Button>(R.id.btnSaveVehicle).setOnClickListener { Toast.makeText(this, "Salvat!", Toast.LENGTH_SHORT).show(); finish() }
+                      findViewById<Button>(R.id.btnResetVehicle).setOnClickListener {
+                          prefs.edit().clear().apply()
+                          fields.forEach { it.second.setText("") }
+                          Toast.makeText(this, "Resetat!", Toast.LENGTH_SHORT).show()
+                      }
+                  } catch (e: Exception) { Toast.makeText(this, "Eroare: ${e.message}", Toast.LENGTH_LONG).show(); finish() }
+              }
+              private fun showDp(k: String, et: EditText) {
+                  val c = Calendar.getInstance()
+                  val cur = prefs.getLong(k, 0L)
+                  if (cur > 0) c.timeInMillis = cur
+                  DatePickerDialog(this, { _, y, m, d ->
+                      val nc = Calendar.getInstance().apply { set(y, m, d, 0, 0, 0) }
+                      prefs.edit().putLong(k, nc.timeInMillis).apply()
+                      et.setText(df.format(nc.time))
+                  }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).apply {
+                      datePicker.minDate = System.currentTimeMillis() - 1000; show()
+                  }
+              }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/ExpiryWorker.kt', '''
+          package ro.profitride
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.content.Context
+          import android.os.Build
+          import androidx.core.app.NotificationCompat
+          import androidx.work.Worker
+          import androidx.work.WorkerParameters
+          import java.util.Calendar
+
+          class ExpiryWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+              override fun doWork(): Result {
+                  try {
+                      val p = applicationContext.getSharedPreferences("vehicle", Context.MODE_PRIVATE)
+                      val items = mapOf("rca" to "RCA", "rcaPers" to "RCA Persoane", "rcaBag" to "RCA Bagaje", "itp" to "ITP",
+                          "stingator" to "Stingător", "trusa" to "Trusă Medicală", "copie" to "Copie Conformă",
+                          "ecusoane" to "Ecusoane", "fisa" to "Fișă Medicală")
+                      val today = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
+                      for ((k, l) in items) {
+                          try {
+                              val e = p.getLong(k, 0L)
+                              if (e > 0) {
+                                  val d = Math.round((e - today) / 86_400_000.0)
+                                  if (d == 30L || d == 15L || d == 10L || d == 3L) send(l, d.toInt())
+                              }
+                          } catch (_: Exception) {}
+                      }
+                  } catch (_: Exception) {}
+                  return Result.success()
+              }
+              private fun send(l: String, d: Int) {
+                  try {
+                      val ch = "vehicle_alerts"
+                      val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) nm.createNotificationChannel(NotificationChannel(ch, "Alerte", NotificationManager.IMPORTANCE_HIGH))
+                      val n = NotificationCompat.Builder(applicationContext, ch).setSmallIcon(android.R.drawable.ic_dialog_alert)
+                          .setContentTitle("Atentie! $l expira curand!").setContentText("Mai ai $d zile: $l.")
+                          .setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true).build()
+                      nm.notify(l.hashCode(), n)
+                  } catch (_: Exception) {}
+              }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/SummaryActivity.kt', '''
+          package ro.profitride
+          import android.app.AlertDialog
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import java.util.Calendar
+
+          class SummaryActivity : AppCompatActivity() {
+              private lateinit var period: String
+              private lateinit var content: TextView
+              private lateinit var prefs: android.content.SharedPreferences
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  try {
+                      setContentView(R.layout.activity_summary)
+                      period = intent.getStringExtra("PERIOADA") ?: "WEEK"
+                      findViewById<TextView>(R.id.tvSummaryTitle).text = when(period) {
+                          "DAY" -> "Sumar Zilnic"; "WEEK" -> "Sumar Saptamanal"; "MONTH" -> "Sumar Lunar"; "YEAR" -> "Sumar Anual"; else -> "Sumar"
+                      }
+                      content = findViewById(R.id.tvSummaryContent)
+                      prefs = getSharedPreferences("cfg", MODE_PRIVATE)
+                      load()
+                      findViewById<Button>(R.id.btnResetSummary).setOnClickListener {
+                          AlertDialog.Builder(this).setTitle("Reset").setMessage("Stergi datele?")
+                              .setPositiveButton("Da") { _, _ -> prefs.edit().putLong("reset_$period", System.currentTimeMillis()).apply(); load() }
+                              .setNegativeButton("Nu", null).show()
+                      }
+                  } catch (e: Exception) { finish() }
+              }
+              private fun load() {
+                  var cnt = 0; var rev = 0f; var exp = 0f; var net = 0f
+                  var com = 0f; var fuel = 0f; var wear = 0f; var kmT = 0f; var corrupt = 0
+                  var minT = 0f; var revH = 0f
+                  val eff = maxOf(getStart(), prefs.getLong("reset_$period", 0L))
+                  try {
+                      openFileInput("offers.csv").bufferedReader().useLines { lines ->
+                          lines.forEach { line ->
+                              try {
+                                  val t = line.trim()
+                                  if (t.isEmpty()) return@forEach
+                                  val p = t.split(",")
+                                  if (p.size < 8) { corrupt++; return@forEach }
+                                  val ts = p[0].toLongOrNull() ?: run { corrupt++; return@forEach }
+                                  if (ts < eff) return@forEach
+                                  cnt++
+                                  val lineRev = p[1].toFloatOrNull() ?: 0f
+                                  rev += lineRev
+                                  kmT += (p[2].toFloatOrNull() ?: 0f) + (p[3].toFloatOrNull() ?: 0f)
+                                  val lineMin = p[5].toFloatOrNull() ?: 0f
+                                  if (lineMin > 0f) { minT += lineMin; revH += lineRev }
+                                  exp += p[6].toFloatOrNull() ?: 0f
+                                  net += p[7].toFloatOrNull() ?: 0f
+                                  if (p.size >= 11) { com += p[8].toFloatOrNull() ?: 0f; fuel += p[9].toFloatOrNull() ?: 0f; wear += p[10].toFloatOrNull() ?: 0f }
+                              } catch (_: Exception) { corrupt++ }
+                          }
+                      }
+                  } catch (_: Exception) {}
+                  val avg = if (kmT > 0f) rev / kmT else 0f
+                  val hInfo = if (minT > 0f) "\\nRON/oră: ${"%.2f".format(revH / (minT / 60f))}" else ""
+                  val cInfo = if (corrupt > 0) "\\n⚠ $corrupt linii corupte" else ""
+                  content.text = "CURSE: $cnt\\nKM: ${"%.1f".format(kmT)}\\n----------\\nVENITURI: ${"%.2f".format(rev)} RON\\nTarif mediu: ${"%.2f".format(avg)} RON/km$hInfo\\n----------\\nCHELTUIELI:\\nComision: ${"%.2f".format(com)}\\nCombustibil: ${"%.2f".format(fuel)}\\nUzura: ${"%.2f".format(wear)}\\nTotal: ${"%.2f".format(exp)} RON\\n----------\\nPROFIT NET: ${"%.2f".format(net)} RON$cInfo"
+              }
+              private fun getStart(): Long {
+                  val c = Calendar.getInstance()
+                  when (period) {
+                      "DAY" -> { c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0) }
+                      "WEEK" -> { c.set(Calendar.DAY_OF_WEEK, c.firstDayOfWeek); c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0) }
+                      "MONTH" -> { c.set(Calendar.DAY_OF_MONTH, 1); c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0) }
+                      "YEAR" -> { c.set(Calendar.DAY_OF_YEAR, 1); c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0) }
+                  }
+                  return c.timeInMillis
+              }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/SettingsActivity.kt', '''
+          package ro.profitride
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.CheckBox
+          import android.widget.EditText
+          import androidx.appcompat.app.AppCompatActivity
+
+          class SettingsActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  try {
+                      setContentView(R.layout.activity_settings)
+                      val p = getSharedPreferences("cfg", MODE_PRIVATE)
+                      val f = findViewById<EditText>(R.id.etFuelPrice); val c = findViewById<EditText>(R.id.etConsumption)
+                      val cm = findViewById<EditText>(R.id.etCommission); val ex = findViewById<EditText>(R.id.etExtraCost)
+                      val mk = findViewById<EditText>(R.id.etMinPerKm); val av = findViewById<EditText>(R.id.etAvgSpeed)
+                      val cb = findViewById<CheckBox>(R.id.cbTtsEnabled)
+                      f.setText(p.getFloat("fuelPrice", 7.5f).toString()); c.setText(p.getFloat("consumption", 7f).toString())
+                      cm.setText(p.getFloat("commission", 20f).toString()); ex.setText(p.getFloat("extraCost", 0.5f).toString())
+                      mk.setText(p.getFloat("minPerKm", 2.5f).toString()); av.setText(p.getFloat("avgSpeedKmh", 25f).toString())
+                      cb.isChecked = p.getBoolean("ttsEnabled", true)
+                      findViewById<Button>(R.id.btnSave).setOnClickListener {
+                          p.edit().putFloat("fuelPrice", f.text.toString().toFloatOrNull() ?: 7.5f)
+                              .putFloat("consumption", c.text.toString().toFloatOrNull() ?: 7f)
+                              .putFloat("commission", cm.text.toString().toFloatOrNull() ?: 20f)
+                              .putFloat("extraCost", ex.text.toString().toFloatOrNull() ?: 0.5f)
+                              .putFloat("minPerKm", mk.text.toString().toFloatOrNull() ?: 2.5f)
+                              .putFloat("avgSpeedKmh", av.text.toString().toFloatOrNull() ?: 25f)
+                              .putBoolean("ttsEnabled", cb.isChecked).apply()
+                          finish()
+                      }
+                  } catch (e: Exception) { finish() }
+              }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/SetupActivity.kt', '''
+          package ro.profitride
+          import android.os.Bundle
+          import androidx.appcompat.app.AppCompatActivity
+          class SetupActivity : AppCompatActivity() {
+              override fun onCreate(b: Bundle?) { super.onCreate(b); setContentView(R.layout.activity_setup) }
+          }
+          ''')
+
+          w('app/src/main/java/ro/profitride/OfferReader.kt', r'''
+          package ro.profitride
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Build
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.os.VibratorManager
+          import android.speech.tts.TextToSpeech
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.core.content.ContextCompat
+          import java.io.File
+          import java.util.Locale
+
+          class OfferReader : AccessibilityService() {
+
+              companion object {
+                  @Volatile var isStopped = false
+                  @Volatile var instance: OfferReader? = null
+                  private val PKGS = listOf("ee.mtakso", "com.ubercab", "com.mytaxi", "com.clever")
+                  private const val DEDUP_MS = 60_000L
+                  private const val HASH_MS = 300L
+                  private const val MAX_LOG = 500_000L
+                  private const val STALE_PENDING_MS = 10 * 60 * 1000L
+                  private const val REOFFER_MS = 30_000L
+              }
+
+              private var overlay: View? = null
+              private var sideBarView: View? = null
+              private var sidePanelView: View? = null
+              private lateinit var wm: WindowManager
+              private val handler = Handler(Looper.getMainLooper())
+              private val autoDismiss = Runnable { removeOverlay() }
+              private var tts: TextToSpeech? = null
+              private var vibrator: Vibrator? = null
+              private val sb = StringBuilder(2048)
+              private var lastTextHash = 0
+              private var lastTextTime = 0L
+              private var lastOfferKey = ""
+              private var lastOfferAt = 0L
+              private var pendingOffer: OfferParser.Offer? = null
+              private var pendingAt = 0L
+              private var lastSavedPrice = 0f
+              private var lastSavedKm = 0f
+              private var lastSavedAt = 0L
+
+              private fun isOfficial(p: String) = PKGS.any { p.startsWith(it) }
+
+              private fun log(m: String) {
+                  try {
+                      val f = File(filesDir, "debug.txt")
+                      if (f.exists() && f.length() > MAX_LOG) f.delete()
+                      f.appendText("${System.currentTimeMillis()}: $m\n")
+                  } catch (_: Throwable) {}
+              }
+
+              private val screenOff = object : BroadcastReceiver() {
+                  override fun onReceive(c: Context?, i: Intent?) {
+                      if (i?.action == Intent.ACTION_SCREEN_OFF) { removeOverlay(); removeSidePanel() }
+                  }
+              }
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  try {
+                      instance = this
+                      wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                      vibrator = if (Build.VERSION.SDK_INT >= 31)
+                          (getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+                      else @Suppress("DEPRECATION") getSystemService(VIBRATOR_SERVICE) as Vibrator
+                      tts = TextToSpeech(this) { if (it == TextToSpeech.SUCCESS) tts?.language = Locale("ro", "RO") }
+                      try { ContextCompat.registerReceiver(this, screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED) } catch (_: Throwable) {}
+                      if (!isStopped) showSideBar()
+                      log("SERVICE START")
+                  } catch (_: Throwable) {}
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  if (isStopped) return
+                  if (event == null) return
+                  try {
+                      val pkg = event.packageName?.toString()?.lowercase() ?: return
+                      if (!isOfficial(pkg)) return
+
+                      // Salvare cand apesi Accept
+                      if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+                          val t = "${event.text?.joinToString(" ") ?: ""} ${event.source?.text ?: ""} ${event.source?.contentDescription ?: ""}".lowercase()
+                          val now0 = System.currentTimeMillis()
+                          val o = pendingOffer
+                          if (t.contains("accept") && o != null && now0 - pendingAt < STALE_PENDING_MS) {
+                              log("ACCEPT CLICK")
+                              saveTrip(o.priceRon, o.pickupKm, o.tripKm, now0)
+                              lastSavedPrice = o.priceRon; lastSavedKm = o.pickupKm + o.tripKm; lastSavedAt = now0
+                              pendingOffer = null; lastOfferKey = ""
+                          }
+                          return
+                      }
+
+                      val root = rootInActiveWindow ?: return
+                      sb.setLength(0); collect(root, sb, 0)
+                      val raw = sb.toString().lowercase()
+                      if (raw.isEmpty()) return
+                      val h = raw.hashCode()
+                      val now = System.currentTimeMillis()
+                      if (h == lastTextHash && now - lastTextTime < HASH_MS) return
+                      lastTextHash = h; lastTextTime = now
+
+                      if (raw.contains("accept")) {
+                          val offer = OfferParser.parse(raw, avgSpeed())
+                          if (offer != null) {
+                              val key = "${offer.priceRon}|${offer.pickupKm}|${offer.tripKm}"
+                              if (key != lastOfferKey || now - lastOfferAt > REOFFER_MS) {
+                                  lastOfferKey = key
+                                  lastOfferAt = now
+                                  pendingOffer = offer; pendingAt = now
+                                  log("OFERTA: $key")
+                                  showOverlay(Calc.compute(this, offer))
+                              }
+                          }
+                      }
+                  } catch (e: Throwable) { log("EVT ERR: ${e.message?.take(60)}") }
+              }
+
+              private fun saveTrip(price: Float, pk: Float, tk: Float, now: Long) {
+                  try {
+                      if (Math.abs(price - lastSavedPrice) < 0.05f && Math.abs((pk + tk) - lastSavedKm) < 0.05f && now - lastSavedAt < 3000L) {
+                          log("DUP SKIP ${price}RON")
+                          return
+                      }
+                      val offer = OfferParser.Offer(price, pk, tk, pendingOffer?.pickupMinutes ?: 0, pendingOffer?.tripMinutes ?: 0)
+                      val r = Calc.compute(this, offer)
+                      val line = "$now,$price,$pk,$tk,${r.grossPerKm},${r.totalMin},${r.totalExpenses},${r.netProfit},${r.commissionCut},${r.fuelCost},${r.extraCost}"
+                      openFileOutput("offers.csv", MODE_APPEND).bufferedWriter().use { it.appendLine(line) }
+                      log("SALVAT: $price RON, ${pk + tk} km")
+                      handler.post {
+                          Toast.makeText(this@OfferReader, "Salvat: ${"%.2f".format(price)} RON", Toast.LENGTH_SHORT).show()
+                          showSaveConfirm(r)
+                      }
+                  } catch (e: Throwable) { log("SAVE ERR: ${e.message?.take(60)}") }
+              }
+
+              private fun showSaveConfirm(r: Calc.Result) {
+                  try {
+                      removeOverlay()
+                      val d = resources.displayMetrics.density
+                      val c = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          background = GradientDrawable().apply { setColor(Color.parseColor("#EE111111")); cornerRadius = 20f * d; setStroke((4 * d).toInt(), Color.parseColor("#4CAF50")) }
+                          setPadding((14 * d).toInt(), (10 * d).toInt(), (14 * d).toInt(), (10 * d).toInt())
+                      }
+                      c.addView(TextView(this).apply { text = "Salvat"; setTextColor(Color.parseColor("#4CAF50")); textSize = 13f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER })
+                      c.addView(TextView(this).apply { text = "%.2f RON · %.1f km".format(r.priceRon, r.totalKm); setTextColor(Color.WHITE); textSize = 11f; gravity = Gravity.CENTER })
+                      val t = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+                      val p = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, t, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT)
+                      p.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; p.y = (150 * d).toInt()
+                      wm.addView(c, p); overlay = c; handler.postDelayed({ removeOverlay() }, 3000L)
+                  } catch (_: Throwable) {}
+              }
+
+              private fun avgSpeed(): Float {
+                  val v = getSharedPreferences("cfg", MODE_PRIVATE).getFloat("avgSpeedKmh", 25f)
+                  return if (v >= 5f) v else 25f
+              }
+              private fun collect(n: AccessibilityNodeInfo?, b: StringBuilder, d: Int) {
+                  if (n == null || d > 40 || b.length > 20000) return
+                  n.text?.toString()?.trim()?.let { if (it.isNotEmpty()) b.append(it).append('\n') }
+                  n.contentDescription?.toString()?.trim()?.let { if (it.isNotEmpty()) b.append(it).append('\n') }
+                  for (i in 0 until n.childCount) collect(n.getChild(i), b, d + 1)
+              }
+              private fun speak(r: Calc.Result) {
+                  if (!getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("ttsEnabled", true)) return
+                  try { tts?.speak(r.speech, TextToSpeech.QUEUE_FLUSH, null, "o") } catch (_: Throwable) {}
+              }
+              private fun vibrate(col: Int) {
+                  try {
+                      val v = vibrator ?: return
+                      val ms = when (col) { Color.parseColor("#4CAF50") -> 120L; Color.parseColor("#FFEB3B") -> 250L; else -> 500L }
+                      if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE)) else @Suppress("DEPRECATION") v.vibrate(ms)
+                  } catch (_: Throwable) {}
+              }
+
+              private fun showOverlay(r: Calc.Result) {
+                  try {
+                      removeOverlay()
+                      val d = resources.displayMetrics.density
+                      val c = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          background = GradientDrawable().apply { setColor(Color.parseColor("#EE000000")); cornerRadius = 20f * d; setStroke((3 * d).toInt(), r.color) }
+                          setPadding((10 * d).toInt(), (8 * d).toInt(), (10 * d).toInt(), (6 * d).toInt())
+                          setOnTouchListener(dragListener()); elevation = 18f
+                      }
+                      val hr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                      hr.addView(TextView(this).apply { text = r.label; setTextColor(r.color); textSize = 11f; typeface = Typeface.DEFAULT_BOLD; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                      hr.addView(TextView(this).apply { text = "X"; setTextColor(Color.parseColor("#AAAAAA")); textSize = 14f; setPadding((6 * d).toInt(), 0, 0, 0); setOnClickListener { removeOverlay() } })
+                      c.addView(hr)
+
+                      val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+                      val gs = (95 * d).toInt()
+                      val m = (3 * d).toInt()
+                      row.addView(GaugeView(this).apply {
+                          percent = (r.grossPerKm / 5f).coerceIn(0f, 1f); arcColor = r.color
+                          valueText = "%.2f".format(r.grossPerKm); labelText = "RON/km"
+                          layoutParams = LinearLayout.LayoutParams(gs, gs).apply { marginEnd = m }
+                      })
+                      row.addView(GaugeView(this).apply {
+                          val ratio = if (r.priceRon > 0f) r.netProfit / r.priceRon else 0f
+                          percent = ratio.coerceIn(0f, 1f); arcColor = r.color
+                          valueText = "%.0f".format(r.netProfit); labelText = "RAMANE"
+                          subLabelText = "Chelt: %.0f".format(r.totalExpenses)
+                          layoutParams = LinearLayout.LayoutParams(gs, gs).apply { marginStart = m }
+                      })
+                      c.addView(row)
+                      c.addView(TextView(this).apply { text = "%.1f km · %d min · %.2f RON".format(r.totalKm, r.totalMin, r.priceRon); setTextColor(Color.parseColor("#AAAAAA")); textSize = 9f; gravity = Gravity.CENTER; setPadding(0, (4 * d).toInt(), 0, 0) })
+
+                      val t = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+                      val p = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, t, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT)
+                      p.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; p.y = (100 * d).toInt()
+                      wm.addView(c, p); overlay = c; c.tag = p
+                      handler.postDelayed(autoDismiss, 25_000L)
+                      speak(r); vibrate(r.color)
+                  } catch (_: Throwable) {}
+              }
+
+              private fun dragListener(): View.OnTouchListener {
+                  var sx = 0; var sy = 0; var tx = 0f; var ty = 0f; var mv = false
+                  return View.OnTouchListener { v, e ->
+                      val p = v.tag as? WindowManager.LayoutParams ?: return@OnTouchListener false
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { sx = p.x; sy = p.y; tx = e.rawX; ty = e.rawY; mv = false; true }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = (e.rawX - tx).toInt(); val dy = (e.rawY - ty).toInt()
+                              if (dx * dx + dy * dy > 100) mv = true
+                              if (mv) { p.x = sx + dx; p.y = sy + dy; try { wm.updateViewLayout(v, p) } catch (_: Exception) {} }
+                              true
+                          }
+                          MotionEvent.ACTION_UP -> { if (!mv) removeOverlay(); true }
+                          else -> false
+                      }
+                  }
+              }
+              private fun removeOverlay() {
+                  try { handler.removeCallbacks(autoDismiss); overlay?.let { try { wm.removeView(it) } catch (_: Exception) {} }; overlay = null } catch (_: Throwable) {}
+              }
+
+              fun showSideBar() {
+                  if (sideBarView != null) return
+                  try {
+                      val d = resources.displayMetrics.density
+                      val bar = View(this).apply {
+                          background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.parseColor("#80D32F2F")); cornerRadii = floatArrayOf(0f, 6f * d, 6f * d, 0f, 0f, 6f * d, 6f * d, 0f) }
+                          setOnClickListener { toggleSidePanel() }; setOnTouchListener(barDrag())
+                      }
+                      val t = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+                      val p = WindowManager.LayoutParams((6 * d).toInt(), (180 * d).toInt(), t, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT)
+                      p.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                      wm.addView(bar, p); sideBarView = bar; bar.tag = p
+                  } catch (_: Throwable) {}
+              }
+
+              private fun barDrag(): View.OnTouchListener {
+                  var sy = 0; var ty = 0f; var mv = false
+                  return View.OnTouchListener { v, e ->
+                      val p = v.tag as? WindowManager.LayoutParams ?: return@OnTouchListener false
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { sy = p.y; ty = e.rawY; mv = false; true }
+                          MotionEvent.ACTION_MOVE -> { val dy = (e.rawY - ty).toInt(); if (Math.abs(dy) > 15) mv = true; if (mv) { p.y = sy + dy; try { wm.updateViewLayout(v, p) } catch (_: Exception) {} }; true }
+                          MotionEvent.ACTION_UP -> { if (!mv) v.performClick(); true }
+                          else -> false
+                      }
+                  }
+              }
+
+              private fun toggleSidePanel() {
+                  if (sidePanelView != null) { removeSidePanel(); return }
+                  try {
+                      val d = resources.displayMetrics.density
+                      val p = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          background = GradientDrawable().apply { setColor(Color.parseColor("#F0111111")); cornerRadius = 20f * d; setStroke((2 * d).toInt(), Color.parseColor("#4CAF50")) }
+                          setPadding((16 * d).toInt(), (16 * d).toInt(), (16 * d).toInt(), (16 * d).toInt())
+                      }
+                      p.addView(TextView(this).apply { text = "ProfitRide Activ"; setTextColor(Color.parseColor("#4CAF50")); textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, (10 * d).toInt()) })
+                      p.addView(TextView(this).apply { text = lastInfo(); setTextColor(Color.WHITE); textSize = 12f; typeface = Typeface.MONOSPACE; setPadding(0, 0, 0, (14 * d).toInt()) })
+                      fun addBtn(txt: String, c: Int, a: () -> Unit) {
+                          p.addView(Button(this).apply { text = txt; setTextColor(Color.WHITE); textSize = 13f; background = GradientDrawable().apply { setColor(c); cornerRadius = 30f * d }; setOnClickListener { a() } })
+                      }
+                      addBtn("Sumar", Color.parseColor("#9C27B0")) { removeSidePanel(); try { startActivity(Intent(this, SummaryActivity::class.java).putExtra("PERIOADA", "DAY").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {} }
+                      addBtn("Setari", Color.parseColor("#2196F3")) { removeSidePanel(); try { startActivity(Intent(this, SettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {} }
+                      addBtn("Auto", Color.parseColor("#E91E63")) { removeSidePanel(); try { startActivity(Intent(this, VehicleActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {} }
+                      addBtn("Opreste", Color.parseColor("#B71C1C")) { isStopped = true; removeSidePanel(); removeSideBar() }
+                      val t = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+                      val lp = WindowManager.LayoutParams((280 * d).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, t, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT)
+                      lp.gravity = Gravity.START or Gravity.CENTER_VERTICAL; lp.x = (20 * d).toInt()
+                      wm.addView(p, lp); sidePanelView = p
+                      handler.postDelayed({ removeSidePanel() }, 15000L)
+                  } catch (_: Throwable) {}
+              }
+
+              private fun lastInfo(): String {
+                  return try {
+                      val lines = openFileInput("offers.csv").bufferedReader().use { it.readLines() }
+                      val last = lines.lastOrNull { it.isNotBlank() } ?: return "Nicio cursa."
+                      val p = last.split(",")
+                      if (p.size >= 8) {
+                          val km = (p[2].toFloatOrNull() ?: 0f) + (p[3].toFloatOrNull() ?: 0f)
+                          "Ultima:\nTarif: ${"%.2f".format(p[1].toFloatOrNull() ?: 0f)} RON\nKm: ${"%.1f".format(km)}\nRON/km: ${"%.2f".format(p[4].toFloatOrNull() ?: 0f)}\nNet: ${"%.2f".format(p[7].toFloatOrNull() ?: 0f)}"
+                      } else "Incomplet"
+                  } catch (_: Exception) { "Nicio cursa." }
+              }
+
+              private fun removeSidePanel() { try { sidePanelView?.let { wm.removeView(it) } } catch (_: Throwable) {}; sidePanelView = null }
+              private fun removeSideBar() { try { sideBarView?.let { wm.removeView(it) } } catch (_: Throwable) {}; sideBarView = null }
+
+              override fun onInterrupt() { removeOverlay(); removeSideBar(); removeSidePanel() }
+              override fun onDestroy() {
+                  instance = null
+                  removeOverlay(); removeSideBar(); removeSidePanel()
+                  try { unregisterReceiver(screenOff) } catch (_: Throwable) {}
+                  try { tts?.stop(); tts?.shutdown() } catch (_: Throwable) {}
+                  tts = null; super.onDestroy()
+              }
+          }
+          ''')
+          PYEOF
+
+      - name: Build debug APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProfitRide-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
